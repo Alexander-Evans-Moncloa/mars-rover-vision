@@ -4,6 +4,7 @@ import socket
 import paho.mqtt.client as mqtt
 import heapq
 import itertools
+import time
 
 # ArUco and MQTT setup (same as before)
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
@@ -11,7 +12,7 @@ parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 corner_ids = [0, 16, 28, 29]
 drone_id = 30
-real_world_coords = {0: (0.0, 0.0), 16: (500, 0.0), 28: (0.0, 500), 29: (500, 500)}
+real_world_coords = {0: (0.0, 0.0), 16: (1000, 0.0), 28: (0.0, 1000), 29: (1000, 1000)}
 ARUCO_MARKER_SIZE_M = 100
 client = mqtt.Client()
 client.username_pw_set("CENSORED", password="CENSORED")
@@ -134,8 +135,9 @@ def detect_red_objects(H, frame, x_coord, y_coord, num_points=6):
     point_1 = red_points[0]
     point_last = red_points[-1]
     middle_points = red_points[1:-1]
+    num_points = num_points
     
-    return point_1, point_last, middle_points
+    return point_1, point_last, middle_points, num_points
 
 def detect_blue_obstacles(frame, max_obstacles=2):
     """Detect blue obstacles in the frame."""
@@ -283,6 +285,11 @@ def main():
     endpoint_coordinate_x = float(input("Enter the new final x-coordinate: "))
     endpoint_coordinate_y = float(input("Enter the new final y-coordinate: "))
 
+    # Initialize a timer
+    start_time = time.time()
+    elapsed_time = 0
+    waiting_for_input = True  # Flag to control when to wait for input
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -328,18 +335,18 @@ def main():
             # Drone world coordinates and yaw
             drone_center = (np.mean(c_drone[:, 0]), np.mean(c_drone[:, 1]))
             drone_world_coords = apply_homography(H, drone_center)
-            x_coord = drone_world_coords[0].item()  # Fix deprecated conversion
-            y_coord = drone_world_coords[1].item()  # Fix deprecated conversion
-            yaw_angle = float(calculate_yaw_angle(c_marker0, c_drone))  # This is your marker0_angle
+            x_coord = int(drone_world_coords[0].item())  # Fix deprecated conversion
+            y_coord = int(drone_world_coords[1].item())  # Fix deprecated conversion
+            yaw_angle = round(float(calculate_yaw_angle(c_marker0, c_drone)), 1)  # This is your marker0_angle
 
             # Check if initialization is complete
             if not initialization_complete:
                 # Detect red obstacles and blue obstacles
-                point_1, point_last, middle_points = detect_red_objects(H, frame, x_coord, y_coord)
+                point_1, point_last, middle_points, num_points = detect_red_objects(H, frame, x_coord, y_coord)
                 blue_obstacles = detect_blue_obstacles(frame)
 
                 # Ensure we have enough red points
-                if point_1 and point_last:
+                if point_1 and point_last and len(middle_points) == (num_points - 2):
                     # Apply TSP with obstacle avoidance
                     ordered_points = tsp_with_obstacle_avoidance(point_1, point_last, middle_points, blue_obstacles)
                     # Transform red points to world coordinates using homography
@@ -354,11 +361,14 @@ def main():
             # Get target coordinates from the function
             target_coord_x, target_coord_y, current_index, finished = target_coordinate_calculation(x_coord, y_coord, current_index, red_world_coords, endpoint_coordinate_x, endpoint_coordinate_y)
 
-            # Declare program states
-            if not finished:
-                program_state = 1  # Start program
-            else:
-                program_state = 2  # End program
+            if program_state == 1:  # Ensure the navigation starts after the user input
+                # Continue with navigation logic...
+                if finished:  # Only transition to state 2 after navigation is finished
+                    program_state = 2
+                    client.publish(MQTT_TOPIC_STATE, str(program_state))
+
+            target_coord_x = int(target_coord_x)
+            target_coord_y = int(target_coord_y)
 
             # Define the real-world coordinates
             real_world_coords = (target_coord_x, target_coord_y)
@@ -386,8 +396,8 @@ def main():
 
             if ball_center:
                 ball_world_coords = apply_homography(H, ball_center)
-                ball_x = ball_world_coords[0].item()  # Fix deprecated conversion
-                ball_y = ball_world_coords[1].item()  # Fix deprecated conversion
+                ball_x = int(ball_world_coords[0].item())  # Fix deprecated conversion
+                ball_y = int(ball_world_coords[1].item())  # Fix deprecated conversion
 
                 # Current position of the ball (newly detected)
                 current_position = (ball_x, ball_y)
@@ -398,6 +408,8 @@ def main():
 
                 # Calculate the ball angle relative to marker 0's orientation (yaw_angle)
                 relative_ball_angle = calculate_ball_angle(previous_position, current_position, yaw_angle)
+
+                relative_ball_angle = round(relative_ball_angle, 1)
 
                 # Update previous_position for the next frame
                 previous_position = current_position
@@ -431,6 +443,18 @@ def main():
         # Draw detected markers and additional information on the frame
         frame = cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
+        if 30 in ids:
+            marker_detection_start_time = None  # Reset timer if all markers are detected
+        else:
+            # Start the timer if it wasn't already started
+            if marker_detection_start_time is None:
+                marker_detection_start_time = time.time()
+
+            # If markers have not been detected for 2 seconds, change to program_state = 2
+            elif time.time() - marker_detection_start_time >= 2:
+                program_state = 2
+                client.publish(MQTT_TOPIC_STATE, str(program_state))
+
         # Display basic MQTT information on frame
         if H is not None:
             cv2.putText(frame, f"Drone: X={x_coord:.2f}, Y={y_coord:.2f}, Yaw={yaw_angle:.2f}",
@@ -441,6 +465,7 @@ def main():
 
             x_world_float = int(real_world_coords[0])  # Fix deprecated conversion
             y_world_float = int(real_world_coords[1])  # Fix deprecated conversion
+            
             if not finished:
                 cv2.putText(frame, f"Target: X={x_world_float:.0f}, Y={y_world_float:.0f}",
                             (10, 90 + i * 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
@@ -451,12 +476,26 @@ def main():
         # Display the frame
         cv2.imshow('Drone Navigation', frame)
 
-        # Break the loop on 'q' key press
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+        # Check if 1 second has passed
+        elapsed_time = time.time() - start_time
+        
+        if elapsed_time >= 1 and waiting_for_input:
+            print("Press Enter to start the program after confirming the points are correct...")
+            user_input = input()  # Wait for user input
+            
+            if user_input.lower() == 'q':
+                break
+            else:
+                program_state = 1  # Change to start state after input
+                client.publish(MQTT_TOPIC_STATE, str(program_state))  # Publish the updated state
+                waiting_for_input = False  # Stop waiting for input
+
+
     cap.release()
-    cv2.destroyAllWindows()
+    cv2.destroyAllWindows()    
 
 if __name__ == "__main__":
     main()
