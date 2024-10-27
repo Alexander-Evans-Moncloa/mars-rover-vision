@@ -3,5 +3,7 @@ Computer vision for mars rover with MQTT broadcasting. Gif below shows our first
 
 ![](https://github.com/Alexander-Evans-Moncloa/mars-rover-vision/blob/main/evidence.gif)
 
+The image below shows the software detecting blue obstacles and rerouting the order of red obstacles, along with detecting a green ball and estimating the incoming angle of attack. These are all broadcasted via MQTT for the Raspberry Pi on board to detect and act accordingly.
+
 ![](https://github.com/Alexander-Evans-Moncloa/mars-rover-vision/blob/main/evidence.png)
 
