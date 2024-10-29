@@ -16,7 +16,7 @@ real_world_coords = {0: (0.0, 0.0), 16: (1000, 0.0), 28: (0.0, 1000), 29: (1000,
 ARUCO_MARKER_SIZE_M = 100
 client = mqtt.Client()
 client.username_pw_set("CENSORED", password="CENSORED")
-client.connect("CENSORED", 31415, 60)
+client.connect("fesv-mqtt.bath.ac.uk", 31415, 60)
 client.loop_start()
 
 # The next position for rover to go towards
@@ -274,7 +274,7 @@ def main():
     # Set up video capture
     cap = cv2.VideoCapture(0)
     last_valid_homography = None
-    program_state = 0  # 0 = idle, 1 = start, 2 = finish
+    program_state = 2  # 0 = idle, 1 = start, 2 = finish
     current_index = 0
     initialization_complete = False  # Flag to indicate initialization is complete
 
@@ -289,6 +289,10 @@ def main():
     start_time = time.time()
     elapsed_time = 0
     waiting_for_input = True  # Flag to control when to wait for input
+
+
+    # Initialize last detection time
+    last_detection_time = 0
 
     while True:
         ret, frame = cap.read()
@@ -417,11 +421,16 @@ def main():
                 # Draw a circle on the ball in the image
                 cv2.circle(frame, ball_center, 5, (0, 255, 0), -1)
 
+                last_detection_time = time.time()
+
                 # Publish green ball information
                 client.publish(MQTT_TOPIC_EVENT_STATE, "1")
                 client.publish(MQTT_TOPIC_EVENT_X, f"{ball_x:.2f}")
                 client.publish(MQTT_TOPIC_EVENT_Y, f"{ball_y:.2f}")
                 client.publish(MQTT_TOPIC_EVENT_THETA, f"{relative_ball_angle:.2f}")
+            elif time.time() - last_detection_time <= 1:
+                # Continue broadcasting the last known values if within 1 second of last detection
+                client.publish(MQTT_TOPIC_EVENT_STATE, "1")
             else:
                 client.publish(MQTT_TOPIC_EVENT_STATE, "0")
 
@@ -443,6 +452,7 @@ def main():
         # Draw detected markers and additional information on the frame
         frame = cv2.aruco.drawDetectedMarkers(frame, corners, ids)
 
+        '''
         if 30 in ids:
             marker_detection_start_time = None  # Reset timer if all markers are detected
         else:
@@ -451,9 +461,10 @@ def main():
                 marker_detection_start_time = time.time()
 
             # If markers have not been detected for 2 seconds, change to program_state = 2
-            elif time.time() - marker_detection_start_time >= 2:
+            elif time.time() - marker_detection_start_time >= 20:
                 program_state = 2
                 client.publish(MQTT_TOPIC_STATE, str(program_state))
+        '''
 
         # Display basic MQTT information on frame
         if H is not None:
